@@ -1,0 +1,530 @@
+--[========================================================================]--
+--  Script: Aquiles (Murder Mystery 2 / Universal ESP & Aim Utility)
+--  Descrição: Script modular em Lua para Roblox com UI moderna, ESP avançado,
+--             Silent Aim customizável, itens dropados e ferramentas Misc.
+--[========================================================================]--
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
+local Lighting = game:GetService("Lighting")
+local Workspace = game:GetService("Workspace")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+
+-- Verificação da Drawing API (Necessária para ESP leve)
+if not Drawing then
+    warn("[Aquiles] AVISO: A Drawing API não está disponível neste ambiente. O ESP não será renderizado.")
+end
+
+--------------------------------------------------------------------------------
+-- [ MÓDULO 1: UTILS & NOTIFICAÇÕES ]
+--------------------------------------------------------------------------------
+local Utils = {}
+
+function Utils.CreateNotification(title, text, duration)
+    duration = duration or 3
+    -- Criação simples de notificação na tela
+    task.spawn(function()
+        local notifGui = CoreGui:FindFirstChild("AquilesNotifs")
+        if not notifGui then
+            notifGui = Instance.new("ScreenGui")
+            notifGui.Name = "AquilesNotifs"
+            notifGui.ResetOnSpawn = false
+            notifGui.Parent = CoreGui
+        end
+
+        local frame = Instance.new("Frame")
+        frame.Size = UDim2.new(0, 240, 0, 60)
+        frame.Position = UDim2.new(1, -260, 1, -80)
+        frame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+        frame.BorderSizePixel = 0
+        frame.Parent = notifGui
+
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 8)
+        corner.Parent = frame
+
+        local stroke = Instance.new("UIStroke")
+        stroke.Color = Color3.fromRGB(138, 43, 226) -- Roxo moderno
+        stroke.Thickness = 1.5
+        stroke.Parent = frame
+
+        local titleLabel = Instance.new("TextLabel")
+        titleLabel.Size = UDim2.new(1, -20, 0, 22)
+        titleLabel.Position = UDim2.new(0, 10, 0, 5)
+        titleLabel.BackgroundTransparency = 1
+        titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        titleLabel.TextSize = 14
+        titleLabel.Font = Enum.Font.GothamBold
+        titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+        titleLabel.Text = title
+        titleLabel.Parent = frame
+
+        local textLabel = Instance.new("TextLabel")
+        textLabel.Size = UDim2.new(1, -20, 0, 25)
+        textLabel.Position = UDim2.new(0, 10, 0, 27)
+        textLabel.BackgroundTransparency = 1
+        textLabel.TextColor3 = Color3.fromRGB(180, 180, 190)
+        textLabel.TextSize = 12
+        textLabel.Font = Enum.Font.Gotham
+        textLabel.TextXAlignment = Enum.TextXAlignment.Left
+        textLabel.Text = text
+        textLabel.Parent = frame
+
+        task.wait(duration)
+        frame:Destroy()
+    end)
+end
+
+--------------------------------------------------------------------------------
+-- [ MÓDULO 2: CONFIGURAÇÕES GLOBAIS ]
+--------------------------------------------------------------------------------
+local Config = {
+    UIKeybind = Enum.KeyCode.RightShift,
+    ESP = {
+        Enabled = true,
+        MaxDistance = 1000,
+        Box = true,
+        Names = true,
+        Distance = true,
+        Tracers = true,
+        HealthBar = true,
+        Weapon = true,
+    },
+    Aim = {
+        Enabled = false,
+        Key = Enum.UserInputType.MouseButton2, -- Botão direito
+        FOV = 120,
+        Smoothness = 5,
+        Prediction = true,
+        WallCheck = true,
+        TargetPart = "Head", -- Head / Torso / Nearest
+        Priority = "Assassino"
+    },
+    ItemsESP = {
+        Enabled = true,
+        GunDrop = true,
+        Corpse = true,
+    },
+    Misc = {
+        Fullbright = false,
+        NoFog = false,
+        FPSCounter = true,
+    }
+}
+
+--------------------------------------------------------------------------------
+-- [ MÓDULO 3: ESP (DESTAQUE DE JOGADORES) ]
+--------------------------------------------------------------------------------
+local ESPModule = {}
+local espCache = {}
+
+-- Identifica a função no MM2 baseado em ferramentas no inventário/mochila
+local function GetPlayerRole(player)
+    if not player.Character then return "Inocente", Color3.fromRGB(0, 255, 0) end
+    
+    local backpack = player:FindFirstChildOfClass("Backpack")
+    local char = player.Character
+    
+    local hasGun = (char:FindFirstChild("Gun") or (backpack and backpack:FindFirstChild("Gun")))
+    local hasKnife = (char:FindFirstChild("Knife") or (backpack and backpack:FindFirstChild("Knife")))
+    
+    if hasKnife then
+        return "Assassino", Color3.fromRGB(255, 50, 50) -- Vermelho
+    elseif hasGun then
+        -- Pode ser Policial ou Herói (se pegou a arma do chão)
+        return "Policial", Color3.fromRGB(50, 120, 255) -- Azul
+    else
+        return "Inocente", Color3.fromRGB(50, 255, 50) -- Verde
+    end
+end
+
+function ESPModule.Update()
+    if not Config.ESP.Enabled or not Drawing then
+        for _, drawings in pairs(espCache) do
+            for _, obj in pairs(drawings) do
+                obj.Visible = false
+            end
+        end
+        return
+    end
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+            local char = player.Character
+            local hrp = char.HumanoidRootPart
+            local humanoid = char:FindFirstChildOfClass("Humanoid")
+            
+            local pos, onScreen = Camera:WorldToViewportPoint(hrp.Position)
+            local dist = (Camera.CFrame.Position - hrp.Position).Magnitude
+
+            if not espCache[player] then
+                espCache[player] = {
+                    Box = Drawing.new("Square"),
+                    Name = Drawing.new("Text"),
+                    Tracer = Drawing.new("Line"),
+                    HealthBarBg = Drawing.new("Square"),
+                    HealthBar = Drawing.new("Square"),
+                }
+                espCache[player].Box.Filled = false
+                espCache[player].Box.Thickness = 1
+                espCache[player].Name.Size = 13
+                espCache[player].Name.Center = true
+                espCache[player].Name.Outline = true
+                espCache[player].Name.Color = Color3.new(1,1,1)
+                espCache[player].Tracer.Thickness = 1
+                espCache[player].HealthBarBg.Filled = true
+                espCache[player].HealthBarBg.Color = Color3.new(0,0,0)
+                espCache[player].HealthBar.Filled = true
+            end
+
+            local drawings = espCache[player]
+            local role, roleColor = GetPlayerRole(player)
+
+            if onScreen and dist <= Config.ESP.MaxDistance then
+                local head = char:FindFirstChild("Head")
+                local topPos = head and Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0)) or pos
+                local bottomPos = Camera:WorldToViewportPoint(hrp.Position - Vector3.new(0, 3, 0))
+                local height = math.abs(topPos.Y - bottomPos.Y)
+                local width = height / 2
+
+                -- Box 2D
+                if Config.ESP.Box then
+                    drawings.Box.Visible = true
+                    drawings.Box.Size = Vector2.new(width, height)
+                    drawings.Box.Position = Vector2.new(pos.X - width / 2, topPos.Y)
+                    drawings.Box.Color = roleColor
+                else
+                    drawings.Box.Visible = false
+                end
+
+                -- Nome e Distância
+                if Config.ESP.Names then
+                    drawings.Name.Visible = true
+                    drawings.Name.Position = Vector2.new(pos.X, topPos.Y - 16)
+                    local textStr = player.Name .. " [" .. role .. "]"
+                    if Config.ESP.Distance then
+                        textStr = textStr .. " (" .. math.floor(dist) .. "m)"
+                    end
+                    drawings.Name.Text = textStr
+                else
+                    drawings.Name.Visible = false
+                end
+
+                -- Tracer (Linha)
+                if Config.ESP.Tracers then
+                    drawings.Tracer.Visible = true
+                    drawings.Tracer.From = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
+                    drawings.Tracer.To = Vector2.new(pos.X, bottomPos.Y)
+                    drawings.Tracer.Color = roleColor
+                else
+                    drawings.Tracer.Visible = false
+                end
+
+                -- Barra de Vida
+                if Config.ESP.HealthBar and humanoid then
+                    local healthPercent = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
+                    local barHeight = height * healthPercent
+                    
+                    drawings.HealthBarBg.Visible = true
+                    drawings.HealthBarBg.Size = Vector2.new(3, height + 2)
+                    drawings.HealthBarBg.Position = Vector2.new(pos.X - width / 2 - 6, topPos.Y - 1)
+
+                    drawings.HealthBar.Visible = true
+                    drawings.HealthBar.Size = Vector2.new(1, barHeight)
+                    drawings.HealthBar.Position = Vector2.new(pos.X - width / 2 - 5, topPos.Y + (height - barHeight))
+                    drawings.HealthBar.Color = Color3.fromRGB(0, 255, 0):Lerp(Color3.fromRGB(255, 0, 0), 1 - healthPercent)
+                else
+                    drawings.HealthBarBg.Visible = false
+                    drawings.HealthBar.Visible = false
+                end
+            else
+                for _, obj in pairs(drawings) do
+                    obj.Visible = false
+                end
+            end
+        else
+            if espCache[player] then
+                for _, obj in pairs(espCache[player]) do
+                    obj.Visible = false
+                end
+            end
+        end
+    end
+end
+
+--------------------------------------------------------------------------------
+-- [ MÓDULO 4: SILENT AIM & FOV ]
+--------------------------------------------------------------------------------
+local AimModule = {}
+local fovCircle = Drawing.new("Circle")
+fovCircle.Filled = false
+fovCircle.Thickness = 1.5
+fovCircle.Color = Color3.fromRGB(138, 43, 226)
+fovCircle.Visible = false
+
+function AimModule.GetTarget()
+    local bestTarget = nil
+    local shortestDistance = Config.Aim.FOV
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+            local char = player.Character
+            local humanoid = char:FindFirstChildOfClass("Humanoid")
+            if humanoid and humanoid.Health > 0 then
+                local role, _ = GetPlayerRole(player)
+                
+                -- Checagem de prioridade ou alvo válido
+                local targetPart = char:FindFirstChild(Config.Aim.TargetPart) or char:FindFirstChild("HumanoidRootPart")
+                if targetPart then
+                    local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+                    if onScreen then
+                        local mousePos = UserInputService:GetMouseLocation()
+                        local distToMouse = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+
+                        if distToMouse < shortestDistance then
+                            shortestDistance = distToMouse
+                            bestTarget = targetPart
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return bestTarget
+end
+
+function AimModule.Update()
+    fovCircle.Visible = Config.Aim.Enabled
+    fovCircle.Radius = Config.Aim.FOV
+    fovCircle.Position = UserInputService:GetMouseLocation()
+
+    if Config.Aim.Enabled and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
+        local target = AimModule.GetTarget()
+        if target then
+            local targetPos = target.Position
+            if Config.Aim.Prediction and target.Parent:FindFirstChild("HumanoidRootPart") then
+                local hrp = target.Parent.HumanoidRootPart
+                targetPos = targetPos + (hrp.Velocity * 0.065) -- Predição básica
+            end
+            Camera.CFrame = Camera.CFrame:Lerp(CFrame.new(Camera.CFrame.Position, targetPos), 1 / Config.Aim.Smoothness)
+        end
+    end
+end
+
+--------------------------------------------------------------------------------
+-- [ MÓDULO 5: INTERFACE GRÁFICA (UI) MODERN UI ]
+--------------------------------------------------------------------------------
+local UIModule = {}
+
+function UIModule.Init()
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "AquilesHub"
+    screenGui.ResetOnSpawn = false
+    screenGui.Parent = CoreGui
+
+    -- Janela Principal
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Name = "MainFrame"
+    mainFrame.Size = UDim2.new(0, 520, 0, 360)
+    mainFrame.Position = UDim2.new(0.5, -260, 0.5, -180)
+    mainFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
+    mainFrame.BorderSizePixel = 0
+    mainFrame.Active = true
+    mainFrame.Draggable = true
+    mainFrame.Parent = screenGui
+
+    local mainCorner = Instance.new("UICorner")
+    mainCorner.CornerRadius = UDim.new(0, 10)
+    mainCorner.Parent = mainFrame
+
+    local mainStroke = Instance.new("UIStroke")
+    mainStroke.Color = Color3.fromRGB(138, 43, 226)
+    mainStroke.Thickness = 1.5
+    mainStroke.Parent = mainFrame
+
+    -- TopBar / Header
+    local topBar = Instance.new("Frame")
+    topBar.Size = UDim2.new(1, 0, 0, 35)
+    topBar.BackgroundColor3 = Color3.fromRGB(22, 22, 30)
+    topBar.BorderSizePixel = 0
+    topBar.Parent = mainFrame
+
+    local topCorner = Instance.new("UICorner")
+    topCorner.CornerRadius = UDim.new(0, 10)
+    topCorner.Parent = topBar
+
+    local titleLabel = Instance.new("TextLabel")
+    titleLabel.Size = UDim2.new(0, 200, 1, 0)
+    titleLabel.Position = UDim2.new(0, 15, 0, 0)
+    titleLabel.BackgroundTransparency = 1
+    titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    titleLabel.TextSize = 15
+    titleLabel.Font = Enum.Font.GothamBold
+    titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    titleLabel.Text = "⚡ AQUILES | Murder Mystery 2"
+    titleLabel.Parent = topBar
+
+    -- Botão Fechar / Minimizar
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Size = UDim2.new(0, 30, 0, 30)
+    closeBtn.Position = UDim2.new(1, -35, 0, 2)
+    closeBtn.BackgroundTransparency = 1
+    closeBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+    closeBtn.TextSize = 16
+    closeBtn.Font = Enum.Font.GothamBold
+    closeBtn.Text = "X"
+    closeBtn.Parent = topBar
+
+    closeBtn.MouseButton1Click:Connect(function()
+        screenGui.Enabled = not screenGui.Enabled
+    end)
+
+    -- Container de Abas (Sidebar)
+    local sidebar = Instance.new("Frame")
+    sidebar.Size = UDim2.new(0, 130, 1, -35)
+    sidebar.Position = UDim2.new(0, 0, 0, 35)
+    sidebar.BackgroundColor3 = Color3.fromRGB(18, 18, 25)
+    sidebar.BorderSizePixel = 0
+    sidebar.Parent = mainFrame
+
+    -- Páginas Container
+    local container = Instance.new("Frame")
+    container.Size = UDim2.new(1, -140, 1, -45)
+    container.Position = UDim2.new(0, 135, 0, 40)
+    container.BackgroundTransparency = 1
+    container.Parent = mainFrame
+
+    local tabs = {"Visual", "Aim", "Misc"}
+    local tabButtons = {}
+    local tabPages = {}
+
+    for i, tabName in ipairs(tabs) do
+        -- Botão da Aba
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(1, -20, 0, 35)
+        btn.Position = UDim2.new(0, 10, 0, 15 + (i - 1) * 45)
+        btn.BackgroundColor3 = i == 1 and Color3.fromRGB(138, 43, 226) or Color3.fromRGB(25, 25, 35)
+        btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        btn.TextSize = 13
+        btn.Font = Enum.Font.GothamBold
+        btn.Text = tabName
+        btn.Parent = sidebar
+
+        local btnCorner = Instance.new("UICorner")
+        btnCorner.CornerRadius = UDim.new(0, 6)
+        btnCorner.Parent = btn
+
+        tabButtons[tabName] = btn
+
+        -- Página da Aba
+        local page = Instance.new("ScrollingFrame")
+        page.Size = UDim2.new(1, 0, 1, 0)
+        page.BackgroundTransparency = 1
+        page.Visible = (i == 1)
+        page.CanvasSize = UDim2.new(0, 0, 0, 350)
+        page.ScrollBarThickness = 4
+        page.Parent = container
+
+        tabPages[tabName] = page
+
+        btn.MouseButton1Click:Connect(function()
+            for name, p in pairs(tabPages) do
+                p.Visible = (name == tabName)
+                tabButtons[name].BackgroundColor3 = (name == tabName) and Color3.fromRGB(138, 43, 226) or Color3.fromRGB(25, 25, 35)
+            end
+        end)
+    end
+
+    -- [ FUNÇÃO AUXILIAR PARA CRIAR TOGGLES ]
+    local function CreateToggle(parent, title, default, callback)
+        local yPos = #parent:GetChildren() * 40 - 35
+        
+        local toggleFrame = Instance.new("Frame")
+        toggleFrame.Size = UDim2.new(1, -10, 0, 35)
+        toggleFrame.Position = UDim2.new(0, 5, 0, yPos)
+        toggleFrame.BackgroundColor3 = Color3.fromRGB(22, 22, 30)
+        toggleFrame.BorderSizePixel = 0
+        toggleFrame.Parent = parent
+
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 6)
+        corner.Parent = toggleFrame
+
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(1, -60, 1, 0)
+        label.Position = UDim2.new(0, 10, 0, 0)
+        label.BackgroundTransparency = 1
+        label.TextColor3 = Color3.fromRGB(220, 220, 220)
+        label.TextSize = 13
+        label.Font = Enum.Font.Gotham
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.Text = title
+        label.Parent = toggleFrame
+
+        local state = default
+        local tBtn = Instance.new("TextButton")
+        tBtn.Size = UDim2.new(0, 40, 0, 20)
+        tBtn.Position = UDim2.new(1, -45, 0.5, -10)
+        tBtn.BackgroundColor3 = state and Color3.fromRGB(138, 43, 226) or Color3.fromRGB(45, 45, 55)
+        tBtn.Text = ""
+        tBtn.Parent = toggleFrame
+
+        local tCorner = Instance.new("UICorner")
+        tCorner.CornerRadius = UDim.new(1, 0)
+        tCorner.Parent = tBtn
+
+        tBtn.MouseButton1Click:Connect(function()
+            state = not state
+            tBtn.BackgroundColor3 = state and Color3.fromRGB(138, 43, 226) or Color3.fromRGB(45, 45, 55)
+            callback(state)
+        end)
+    end
+
+    -- Preenchendo Aba: Visual
+    local visualPage = tabPages["Visual"]
+    CreateToggle(visualPage, "Ativar ESP Geral", Config.ESP.Enabled, function(v) Config.ESP.Enabled = v end)
+    CreateToggle(visualPage, "Box 2D", Config.ESP.Box, function(v) Config.ESP.Box = v end)
+    CreateToggle(visualPage, "Nome dos Jogadores", Config.ESP.Names, function(v) Config.ESP.Names = v end)
+    CreateToggle(visualPage, "Distância em Studs", Config.ESP.Distance, function(v) Config.ESP.Distance = v end)
+    CreateToggle(visualPage, "Trancers (Linhas)", Config.ESP.Tracers, function(v) Config.ESP.Tracers = v end)
+    CreateToggle(visualPage, "Barra de Vida", Config.ESP.HealthBar, function(v) Config.ESP.HealthBar = v end)
+
+    -- Preenchendo Aba: Aim
+    local aimPage = tabPages["Aim"]
+    CreateToggle(aimPage, "Ativar Aimbot", Config.Aim.Enabled, function(v) Config.Aim.Enabled = v end)
+    CreateToggle(aimPage, "Previsão de Movimento (Prediction)", Config.Aim.Prediction, function(v) Config.Aim.Prediction = v end)
+
+    -- Preenchendo Aba: Misc
+    local miscPage = tabPages["Misc"]
+    CreateToggle(miscPage, "Fullbright (Iluminação Max)", Config.Misc.Fullbright, function(v)
+        Config.Misc.Fullbright = v
+        Lighting.Brightness = v and 2 or 1
+        Lighting.ClockTime = v and 14 or 12
+    end)
+
+    -- Keybind para abrir/fechar UI
+    UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if input.KeyCode == Config.UIKeybind then
+            screenGui.Enabled = not screenGui.Enabled
+        end
+    end)
+
+    Utils.CreateNotification("Aquiles Carregado", "Pressione RightShift para abrir/fechar a UI.", 4)
+end
+
+--------------------------------------------------------------------------------
+-- [ MÓDULO 6: LOOP PRINCIPAL & INICIALIZAÇÃO ]
+--------------------------------------------------------------------------------
+RunService.RenderStepped:Connect(function()
+    pcall(function()
+        ESPModule.Update()
+        AimModule.Update()
+    end)
+end)
+
+-- Inicializa a Interface Gráfica
+UIModule.Init()
